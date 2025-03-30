@@ -44,10 +44,11 @@ pub unsafe fn rdmsr(msr: u32) -> u64 {
     return ((high as u64) << 32 | low as u64).into();
 }
 
+#[allow(dead_code)]
 pub unsafe fn cr3() -> pmm::Frame  {
-    let mut cr3: u64 = 0;
+    let mut cr3: u64;
 
     asm!("mov rax, cr3", out("rax")(cr3));
 
-    return pmm::Frame::from(cr3);
+    return pmm::Frame::from_u64(cr3, pmm::FRAME_SIZE);
 }

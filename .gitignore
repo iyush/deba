@@ -2,3 +2,9 @@
 /ovmf
 *.iso
 *.hdd
+
+/iso_root
+/userland/build
+
+logs.txt
+bochs.logs

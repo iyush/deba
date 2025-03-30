@@ -69,9 +69,12 @@ kernel:
 	$(MAKE) -C kernel
 
 
+userland/build/hello-world.elf:
+	cd userland && ./build.sh
+
 
 .SILENT: $(IMAGE_NAME).iso
-$(IMAGE_NAME).iso: limine/limine kernel
+$(IMAGE_NAME).iso: limine/limine kernel userland/build/hello-world.elf
 	rm -rf iso_root
 	mkdir -p iso_root/boot
 	cp kernel/kernel iso_root/boot/
@@ -81,13 +84,13 @@ $(IMAGE_NAME).iso: limine/limine kernel
 	cp limine/limine-bios.sys limine/limine-bios-cd.bin limine/limine-uefi-cd.bin iso_root/boot/limine/
 	cp limine/BOOTX64.EFI iso_root/EFI/BOOT/
 	cp limine/BOOTIA32.EFI iso_root/EFI/BOOT/
+	cp userland/build/hello-world.elf iso_root/boot/
 	xorriso -as mkisofs -b boot/limine/limine-bios-cd.bin \
 		-no-emul-boot -boot-load-size 4 -boot-info-table \
 		--efi-boot boot/limine/limine-uefi-cd.bin \
 		-efi-boot-part --efi-boot-image --protective-msdos-label \
 		iso_root -o $(IMAGE_NAME).iso 2> /dev/null
 	./limine/limine bios-install $(IMAGE_NAME).iso 2> /dev/null
-	rm -rf iso_root
 
 .PHONY: clean
 clean:

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 // use core::assert;
-// use core::mem::MaybeUninit;
+use core::slice;
 
 type Elf64Off = u64;
 type Elf64Addr = u64;
@@ -8,6 +8,8 @@ type Elf64Xword = u64;
 type Elf64Half = u16;
 type Elf64Word = u32;
 
+#[derive(Debug)]
+#[repr(u16)]
 enum EIdent {
     EiMag0 = 0,       // File identification
     EiMag1 = 1,       //
@@ -22,7 +24,8 @@ enum EIdent {
     EiNident = 16,    //Size of e_ident[]
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug, Copy, Clone)]
+#[repr(u16)]
 enum ElfType {
     EtNone = 0,        // No file type
     EtRel = 1,         // Relocatable object file
@@ -35,17 +38,20 @@ enum ElfType {
     EtHiproc = 0xFFFF, //
 }
 
+#[derive(Debug)]
 enum ElfClass {
     Elfclass32 = 1,    // 32-bit objects
     Elfclass64 = 2,    // 64-bit objects
     Elfclass288 = 288, // 64-bit objects
 }
 
+#[derive(Debug)]
 enum ElfData {
     Elfdata2Lsb = 1, // Object file data structures are little-endian
     Elfdata2Msb = 2, // Object file data structures are big-endian
 }
 
+#[derive(Debug)]
 enum ElfOSAbi {
     ElfosabiSysv = 0,         // System V ABI
     ElfosabiHpux = 1,         // HP-UX operating system
@@ -53,6 +59,8 @@ enum ElfOSAbi {
 }
 
 // ph_type
+#[derive(Debug)]
+#[repr(u32)]
 enum PhType {
     PtNull = 0,              // Unused entry
     PtLoad = 1,              // Loadable segment
@@ -69,6 +77,8 @@ enum PhType {
 }
 
 // p_flags
+#[derive(Debug)]
+#[repr(u32)]
 enum Pflags {
     PfX = 0x1,               // Execute permission
     PfW = 0x2,               // Write permission
@@ -78,6 +88,8 @@ enum Pflags {
 }
 
 // Section Types, sh_type
+#[derive(Debug)]
+#[repr(u32)]
 enum ShType {
     ShtNull = 0,            // Marks an unused section header
     ShtProgbits = 1,        // Contains information defined by the program
@@ -98,6 +110,8 @@ enum ShType {
 }
 
 // Table 9. Section Attributes, sh_flags
+#[derive(Debug)]
+#[repr(u32)]
 enum ShFlags {
     ShfWrite = 0x1,           // Section contains writable data
     ShfAlloc = 0x2,           // Section is allocated in memory image of program
@@ -106,6 +120,7 @@ enum ShFlags {
     ShfMaskproc = 0xF0000000, // Processor-specific use
 }
 
+#[derive(Debug, Copy, Clone)]
 #[repr(C, packed)]
 struct Elf64Ehdr {
     e_ident: [u8; EIdent::EiNident as usize], /* ELF identification */
@@ -124,6 +139,7 @@ struct Elf64Ehdr {
     e_shstrndx: Elf64Half,                    /* Section name string table index */
 }
 
+#[derive(Debug)]
 #[repr(C, packed)]
 struct Elf64Shdr {
     sh_name: Elf64Word,       /* Section name */
@@ -138,6 +154,7 @@ struct Elf64Shdr {
     sh_entsize: Elf64Xword,   /* Size of entries, if section has table */
 }
 
+#[derive(Debug)]
 #[repr(C, packed)]
 struct Elf64Phdr {
     p_type: Elf64Word,    /* Type of segment */
@@ -150,25 +167,25 @@ struct Elf64Phdr {
     p_align: Elf64Xword,  /* Alignment of segment */
 }
 
+#[derive(Debug)]
 #[repr(C, packed)]
-struct Elf64<'a> {
-    elf_module_start: u64,
+pub struct Elf64<'a> {
     header: Elf64Ehdr,
-    s_headers: &'a Elf64Shdr,
-    s_headers_len: u64,
-    p_headers: &'a Elf64Phdr,
-    p_headers_len: u64,
+    sheaders: &'a [Elf64Shdr],
+    pheaders: &'a [Elf64Phdr],
 }
 
-fn parse<'a>(buf: &'a [u8], len: usize) -> Elf64<'a> {
+pub fn parse<'a>(buf: *mut u8, len: u64) -> Elf64<'a> {
+    let len = len as usize;
+    let buf = unsafe { slice::from_raw_parts(buf, len) };
+    
     let start = buf;
     let current = start;
 
-    // TODO: asserts.
     let sizeof_elf_header = core::mem::size_of::<Elf64Ehdr>();
     assert!(len > sizeof_elf_header, "Not an ELF File (length check)!");
 
-    let (header_bytes, remaining) = current.split_at(sizeof_elf_header);
+    let (header_bytes, _) = current.split_at(sizeof_elf_header);
     let header = unsafe { (header_bytes.as_ptr() as *const Elf64Ehdr).read_unaligned() };
 
     assert!(
@@ -179,7 +196,7 @@ fn parse<'a>(buf: &'a [u8], len: usize) -> Elf64<'a> {
         "Not an ELF file (header check)!"
     );
     assert!(
-        header.e_ident[EIdent::EiClass as usize] == ElfClass::Elfclass288 as u8,
+        header.e_ident[EIdent::EiClass as usize] == ElfClass::Elfclass64 as u8,
         "only ELFCLASS64 supported!"
     );
     assert!(
@@ -211,16 +228,13 @@ fn parse<'a>(buf: &'a [u8], len: usize) -> Elf64<'a> {
 
     let (_, pheader_and_rest) = current.split_at(header.e_phoff as usize);
     let pheader = pheader_and_rest.as_ptr() as *const Elf64Phdr;
-    let pheaders: &[Elf64Phdr] = unsafe { pheader.read_unaligned() };
+    let pheaders: &[Elf64Phdr] = unsafe { slice::from_raw_parts(pheader, header.e_phnum as usize) };
 
-    /*
-    // for (int i = 0; i < header.e_phnum; i++) {
-    //     Elf64_Phdr pheader = pheaders[i];
-    //     // printf("(%d/%d) pheader type: 0x%x\n", i, header.e_phnum, pheader.p_type);
-    // }
+    let (_, sheader_and_rest) = current.split_at(header.e_shoff as usize);
+    let sheader = sheader_and_rest.as_ptr() as *const Elf64Shdr;
+    let sheaders: &[Elf64Shdr] = unsafe { slice::from_raw_parts(sheader, header.e_shnum as usize) };
 
-    current = start + header.e_shoff;
-    Elf64_Shdr* sheaders = (Elf64_Shdr*)current;
+
     // Elf64_Shdr* shstr = sheaders + header.e_shstrndx; // get the sheader at the index specified in the header.
     // u64 shstroffset = (u64)start + shstr->sh_offset; // get the section offset and add it the start.
 
@@ -246,15 +260,17 @@ fn parse<'a>(buf: &'a [u8], len: usize) -> Elf64<'a> {
     // printf("e_shoff: 0x%lx\n", header.e_shoff );
     // printf("e_phoff: 0x%lx\n", header.e_phoff );
 
+    /*
     result.header = header;
     result.elf_module_start = (u64) buf;
     result.s_headers = sheaders;
     result.s_headers_len = header.e_phnum;
     result.p_headers = pheaders;
     result.p_headers_len = header.e_shnum;
-    */
-
-    let maybe_result: MaybeUninit<Elf64> = core::mem::MaybeUninit::zeroed();
-    let mut result = unsafe { maybe_result.assume_init_read() };
-    return result;
+     */
+    Elf64 {
+	header,
+	pheaders,
+	sheaders
+    }
 }

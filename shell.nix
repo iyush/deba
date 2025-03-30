@@ -13,6 +13,10 @@ in
       crossPkgs.buildPackages.bochs
       crossPkgs.buildPackages.gdb
       crossPkgs.buildPackages.binutils
+      crossPkgs.buildPackages.gcc
+
+
+
       gdb-wrapper  # Add the wrapper
 
       pkgs.xorriso

@@ -11,10 +11,13 @@ mod gdt;
 mod idt;
 mod kprint;
 mod pmm;
+mod syscall;
+mod task;
 
 static mut KERNEL_STACK_BASE: [u8; 16384] = unsafe { core::mem::zeroed() };
 static mut INTERRUPT_STACK_BASE: [u8; 16384] = unsafe { core::mem::zeroed() };
 
+#[allow(dead_code)]
 struct ProcessorContext {
     user_stack_ptr: u64,
     kernel_stack_ptr: u64,
@@ -23,46 +26,59 @@ struct ProcessorContext {
 static mut PROCESSOR_CONTEXT: ProcessorContext = unsafe { core::mem::zeroed() };
 
 #[no_mangle]
-unsafe extern "C" fn kmain() -> ! {
+extern "C" fn kmain() -> ! {
     // All limine requests must also be referenced in a called function, otherwise they may be
     // removed by the linker.
     assert!(asa_limine::BASE_REVISION.is_supported());
 
-    let kernel_stack_ptr: *const u8 = KERNEL_STACK_BASE.as_ptr().byte_add(KERNEL_STACK_BASE.len());
-    asm!("mov rsp, {}", in(reg) kernel_stack_ptr as u64);
-    let interrupt_stack_ptr: *const u8 = INTERRUPT_STACK_BASE
-        .as_ptr()
-        .byte_add(INTERRUPT_STACK_BASE.len());
+    unsafe {
+        let kernel_stack_ptr = KERNEL_STACK_BASE.as_ptr().byte_add(KERNEL_STACK_BASE.len()) as u64;
+        let interrupt_stack_ptr = INTERRUPT_STACK_BASE
+            .as_ptr()
+            .byte_add(INTERRUPT_STACK_BASE.len()) as u64;
 
-    gdt::init(kernel_stack_ptr as u64, interrupt_stack_ptr as u64);
-    idt::init();
-    let _ = pmm::init(&asa_limine::MEMMAP_REQUEST, &asa_limine::HHDM_REQUEST);
+        asm!("mov rsp, {}", in(reg) kernel_stack_ptr);
+        gdt::init(kernel_stack_ptr as u64, interrupt_stack_ptr as u64);
+        idt::init();
+    }
 
-    // we are enabling fast syscall in the processor.
-    cpu::wrmsr(
-        cpu::Msr::IA32_EFER,
-        cpu::rdmsr(cpu::Msr::IA32_EFER) | ((1 as u64) << 0),
-    );
-    cpu::wrmsr(cpu::Msr::IA32_FSTAR, 0x43700); // Clear IF,TF,AC, and DF
-                                               // kprintln!("cpu::Msr::IA32_FSTAR {:#x}", cpu::rdmsr(cpu::Msr::IA32_FSTAR));
+    let mut allocator = pmm::init(&asa_limine::MEMMAP_REQUEST, &asa_limine::HHDM_REQUEST);
 
-    // this is syscall entry function
-    // cpu::wrmsr(cpu::Msr::IA32_LSTAR, (u64) & syscall_handler_wrapper);
+    unsafe {
+        // we are enabling fast syscall in the processor.
+        cpu::wrmsr(
+            cpu::Msr::IA32_EFER,
+            cpu::rdmsr(cpu::Msr::IA32_EFER) | ((1 as u64) << 0),
+        );
+        cpu::wrmsr(cpu::Msr::IA32_FSTAR, 0x43700); // Clear IF,TF,AC, and DF
 
-    cpu::wrmsr(cpu::Msr::IA32_STAR, 0x0030002800000000);
-    // kprintln!("cpu::Msr::IA32_STAR {:#x}", cpu::rdmsr(cpu::Msr::IA32_STAR));
+        // this is syscall entry function
+        cpu::wrmsr(cpu::Msr::IA32_LSTAR, syscall::handler_fn as u64);
+        cpu::wrmsr(cpu::Msr::IA32_STAR, 0x0030002800000000);
+        cpu::wrmsr(
+            cpu::Msr::IA32_KERNEL_GS_BASE,
+            &raw const PROCESSOR_CONTEXT as *const ProcessorContext as u64,
+        );
+        cpu::wrmsr(
+            cpu::Msr::IA32_USER_GS_BASE,
+            &raw const PROCESSOR_CONTEXT as *const ProcessorContext as u64,
+        );
+    }
 
-    cpu::wrmsr(cpu::Msr::IA32_KERNEL_GS_BASE, &raw const PROCESSOR_CONTEXT as *const ProcessorContext as u64);
-    cpu::wrmsr(cpu::Msr::IA32_USER_GS_BASE,  &raw const PROCESSOR_CONTEXT as *const ProcessorContext as u64);
+    // let current_page_table_address: &u64 = cpu::cr3().to_higher_half_ptr();
+    // kprintln!(
+    //     "current_page_table_address: {:p}",
+    //     current_page_table_address
+    // );
 
+    let modules = asa_limine::MODULE_REQUEST.get_response().unwrap().modules();
 
-    let current_page_table_address: &u64 = cpu::cr3().to_higher_half_ptr();
-    kprintln!("current_page_table_address: {:p}", current_page_table_address);
+    let program_elf = elf::parse(modules[0].addr(), modules[0].size());
+    kprintln!("{:#x?}", program_elf);
+
+    let task = task::Task::new(&mut allocator);
 
     /*
-    struct limine_file ** modules = ctx_get_modules();
-    Elf64 program_elf = elf_parse(modules[0]->address, modules[0]->size);
-
     scheduler_init();
 
     for (int i = 0; i < 100; i++) {
@@ -83,7 +99,9 @@ unsafe extern "C" fn kmain() -> ! {
                 let pixel_offset = i * framebuffer.pitch() + i * 4;
 
                 // Write 0xFFFFFFFF to the provided pixel offset to fill it white.
-                *(framebuffer.addr().add(pixel_offset as usize) as *mut u32) = 0xFFFFFFFF;
+                unsafe {
+                    *(framebuffer.addr().add(pixel_offset as usize) as *mut u32) = 0xFFFFFFFF;
+                }
             }
         }
     }
